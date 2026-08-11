@@ -1,4 +1,5 @@
 -- Cross-File Skin Weight Copy + Animation Restore
+-- v3.2.5 - named multi-animation save; list + select to import
 -- v3.2.4 - remove redundant "publish to another Max" button (save auto-publishes)
 -- v3.2.3 - fix: sortTracksParentFirst used copy on struct array (returns OK) -> use collect; apply sorted parent-first order
 -- v3.2.2 - streamline UI: copy/save publish automatically
@@ -58,6 +59,32 @@ struct SWTUtil
     fn getWorldVert node mesh vertIndex =
     (
         (getVert mesh vertIndex) * node.objectTransform
+    ),
+
+    fn getAnimationsDir =
+    (
+        local dir = (getDir #temp) + "\\SWT_Animations"
+        if not doesFileExist dir do makeDir dir
+        dir
+    ),
+
+    fn sanitizeAnimName name =
+    (
+        local badChars = #("\\","/",":","*","?","\"","<",">","|")
+        for c in badChars do name = substituteString name c "_"
+        name = trimLeft name
+        name = trimRight name
+        name
+    ),
+
+    fn listSharedAnimations =
+    (
+        local result = #()
+        local dir = SWTUtil.getAnimationsDir()
+        for f in (getFiles (dir + "\\*.ms")) do
+            append result (getFilenameFile f)
+        sort result
+        result
     ),
 
     fn getSharedAnimationPath =
@@ -219,16 +246,18 @@ struct SWTUtil
         SWTUtil.applyTracks snap.tracks
     ),
 
-    fn saveSharedAnimation =
+    fn saveSharedAnimation name =
     (
         if SWT_SavedAnimation == undefined do return false
-        local f = createFile (SWTUtil.getSharedAnimationPath())
+        local animDir = SWTUtil.getAnimationsDir()
+        local animPath = animDir + "\\" + name + ".ms"
+        local f = createFile animPath
         if f == undefined do return false
         local sourceBip = SWT_SavedAnimation.bipedFile
         local sharedBip = ""
         if sourceBip != undefined and sourceBip != "" and doesFileExist sourceBip do
         (
-            sharedBip = SWTUtil.getSharedBipPath()
+            sharedBip = animDir + "\\" + name + ".bip"
             if doesFileExist sharedBip do deleteFile sharedBip
             if not (copyFile sourceBip sharedBip) do return false
         )
@@ -264,9 +293,9 @@ struct SWTUtil
         true
     ),
 
-    fn loadSharedAnimation =
+    fn loadSharedAnimation name =
     (
-        local path = SWTUtil.getSharedAnimationPath()
+        local path = SWTUtil.getAnimationsDir() + "\\" + name + ".ms"
         if not doesFileExist path do return #("missing", path)
         global SWT_SharedAnimation = undefined
         global SWT_SharedAnimationData = undefined
@@ -439,21 +468,31 @@ struct SWTUtil
     )
 )
 
-rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:280
+rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:405
 (
     label lblWeightInfo "权重：选择带 Skin 的模型顶点后复制；另一文件刷新、选择顶点后粘贴。" pos:[15,15] width:270 height:32
     button btnCopy "复制选中顶点权重" pos:[15,55] width:270 height:25
     button btnRefresh "刷新共享权重" pos:[15,85] width:130 height:25
     button btnPaste "粘贴到选中顶点" pos:[155,85] width:130 height:25
 
-    groupBox grpAnimation "动画（不打开 .max 文件）" pos:[10,120] width:280 height:115
-    label lblAnimInfo "保存当前 BIP + 当前选中骨骼动画（自动生成缓存）。另一文件导入即可。" pos:[20,140] width:260 height:30
-    button btnSaveAnimation "保存当前动画" pos:[20,172] width:270 height:25
-    button btnImportAnimation "导入共享动画" pos:[20,202] width:125 height:25
-    button btnRestoreAnimation "恢复保存动画" pos:[155,202] width:125 height:25
+    groupBox grpAnimation "动画（不打开 .max 文件）" pos:[10,120] width:280 height:225
+    label lblAnimInfo "保存 BIP + 选中骨骼动画，可命名保存多个。" pos:[20,138] width:260 height:20
+    editText edtAnimName "动画名:" pos:[20,160] width:260 height:18
+    button btnSaveAnimation "保存当前动画" pos:[20,184] width:270 height:25
+    button btnRefreshAnimList "刷新动画列表" pos:[20,214] width:130 height:25
+    button btnImportAnimation "导入选中动画" pos:[155,214] width:130 height:25
+    listbox lbAnimList "已保存动画:" pos:[20,244] width:270 height:4
+    button btnRestoreAnimation "恢复保存动画" pos:[20,312] width:270 height:25
 
-    editText edtStatus "" pos:[15,240] width:270 height:20 readOnly:true
-    button btnClose "关闭" pos:[105,263] width:90 height:20
+    editText edtStatus "" pos:[15,352] width:270 height:20 readOnly:true
+    button btnClose "关闭" pos:[105,378] width:90 height:20
+
+    fn refreshAnimList =
+    (
+        lbAnimList.items = SWTUtil.listSharedAnimations()
+    )
+
+    on SWT_Rollout open do SWT_Rollout.refreshAnimList()
 
     on btnCopy pressed do
     (
@@ -493,24 +532,45 @@ rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:280
 
     on btnSaveAnimation pressed do
     (
-        local snap = SWTUtil.saveCurrentAnimation()
-        if SWTUtil.saveSharedAnimation() then
-            edtStatus.text = "已保存并发布：BIP + " + snap.tracks.count as string + " 个选中骨骼动画。"
+        local animName = SWTUtil.sanitizeAnimName edtAnimName.text
+        if animName == "" then
+            edtStatus.text = "请输入动画名再保存。"
         else
-            edtStatus.text = "保存失败：未检测到 Biped，或 BIP 写入失败。"
+        (
+            local snap = SWTUtil.saveCurrentAnimation()
+            if SWTUtil.saveSharedAnimation animName then
+            (
+                edtStatus.text = "已保存动画『" + animName + "』：BIP + " + snap.tracks.count as string + " 个选中骨骼。"
+                SWT_Rollout.refreshAnimList()
+            )
+            else
+                edtStatus.text = "保存失败：未检测到 Biped，或 BIP 写入失败。"
+        )
+    )
+
+    on btnRefreshAnimList pressed do
+    (
+        SWT_Rollout.refreshAnimList()
+        edtStatus.text = "已刷新列表，共 " + lbAnimList.items.count as string + " 个动画。"
     )
 
     on btnImportAnimation pressed do
     (
-        local result = SWTUtil.loadSharedAnimation()
-        if result[1] == "ok" then
-            edtStatus.text = "已导入共享 BIP + " + result[2] as string + " 个选中骨骼动画。"
-        else if result[1] == "missing" then
-            edtStatus.text = "找不到共享动画：" + result[2]
-        else if result[1] == "missingBip" then
-            edtStatus.text = "找到动画数据，但 BIP 缺失：" + result[2]
+        if lbAnimList.selection == 0 then
+            edtStatus.text = "请先在列表中选择要导入的动画。"
         else
-            edtStatus.text = "共享动画无效：" + result[2]
+        (
+            local animName = lbAnimList.items[lbAnimList.selection]
+            local result = SWTUtil.loadSharedAnimation animName
+            if result[1] == "ok" then
+                edtStatus.text = "已导入动画『" + animName + "』：BIP + " + result[2] as string + " 个选中骨骼动画。"
+            else if result[1] == "missing" then
+                edtStatus.text = "找不到共享动画：" + result[2]
+            else if result[1] == "missingBip" then
+                edtStatus.text = "找到动画数据，但 BIP 缺失：" + result[2]
+            else
+                edtStatus.text = "共享动画无效：" + result[2]
+        )
     )
 
     on btnRestoreAnimation pressed do
