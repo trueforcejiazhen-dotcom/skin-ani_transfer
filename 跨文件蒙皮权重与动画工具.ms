@@ -1,4 +1,5 @@
 -- Cross-File Skin Weight Copy + Animation Restore
+-- v3.2.6 - save/import/restore auto-fit animation range (save computes keyframe range of selected bones)
 -- v3.2.5 - named multi-animation save; list + select to import
 -- v3.2.4 - remove redundant "publish to another Max" button (save auto-publishes)
 -- v3.2.3 - fix: sortTracksParentFirst used copy on struct array (returns OK) -> use collect; apply sorted parent-first order
@@ -215,10 +216,42 @@ struct SWTUtil
         applied
     ),
 
+    fn getSelectedAnimRange =
+    (
+        local minFrame = undefined
+        local maxFrame = undefined
+        for obj in (SWTUtil.getSelectedAnimNodes()) where isValidNode obj do
+        (
+            local posCtrl = undefined
+            local rotCtrl = undefined
+            try ( posCtrl = obj.pos.controller ) catch()
+            try ( rotCtrl = obj.rotation.controller ) catch()
+            for ctrl in #(posCtrl, rotCtrl) do
+            (
+                if ctrl != undefined do
+                (
+                    try
+                    (
+                        for k in ctrl.keys do
+                        (
+                            local f = k.time.frame as integer
+                            if minFrame == undefined or f < minFrame do minFrame = f
+                            if maxFrame == undefined or f > maxFrame do maxFrame = f
+                        )
+                    ) catch()
+                )
+            )
+        )
+        if minFrame == undefined then undefined else #(minFrame, maxFrame)
+    ),
+
     fn saveCurrentAnimation =
     (
         local root = SWTUtil.findBipedRoot()
         local snap = SWTAnimSnapshot()
+        local animRange = SWTUtil.getSelectedAnimRange()
+        if animRange != undefined then
+            animationRange = interval (animRange[1] as time) (animRange[2] as time)
         snap.startFrame = animationRange.start.frame as integer
         snap.endFrame = animationRange.end.frame as integer
         snap.bipedRootName = if root != undefined then root.name else ""
