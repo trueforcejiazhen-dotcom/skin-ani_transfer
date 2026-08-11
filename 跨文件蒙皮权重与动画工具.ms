@@ -1,4 +1,5 @@
 -- Cross-File Skin Weight Copy + Animation Restore
+-- v3.2.7 - delete animation; persistent cache dir (survives Max restart, manual delete only)
 -- v3.2.6 - save/import/restore auto-fit animation range (save computes keyframe range of selected bones)
 -- v3.2.5 - named multi-animation save; list + select to import
 -- v3.2.4 - remove redundant "publish to another Max" button (save auto-publishes)
@@ -64,9 +65,20 @@ struct SWTUtil
 
     fn getAnimationsDir =
     (
-        local dir = (getDir #temp) + "\\SWT_Animations"
+        local dir = (getDir #userScripts) + "\\SWT_Animations"
         if not doesFileExist dir do makeDir dir
         dir
+    ),
+
+    fn deleteSharedAnimation name =
+    (
+        local dir = SWTUtil.getAnimationsDir()
+        local deleted = 0
+        local msPath = dir + "\\" + name + ".ms"
+        if doesFileExist msPath do ( deleteFile msPath; deleted += 1 )
+        local bipPath = dir + "\\" + name + ".bip"
+        if doesFileExist bipPath do ( deleteFile bipPath; deleted += 1 )
+        deleted
     ),
 
     fn sanitizeAnimName name =
@@ -515,7 +527,8 @@ rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:405
     button btnRefreshAnimList "刷新动画列表" pos:[20,214] width:130 height:25
     button btnImportAnimation "导入选中动画" pos:[155,214] width:130 height:25
     listbox lbAnimList "已保存动画:" pos:[20,244] width:270 height:4
-    button btnRestoreAnimation "恢复保存动画" pos:[20,312] width:270 height:25
+    button btnRestoreAnimation "恢复保存动画" pos:[20,312] width:130 height:25
+    button btnDeleteAnimation "删除选中动画" pos:[155,312] width:130 height:25
 
     editText edtStatus "" pos:[15,352] width:270 height:20 readOnly:true
     button btnClose "关闭" pos:[105,378] width:90 height:20
@@ -614,6 +627,24 @@ rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:405
         (
             local count = SWTUtil.applySnapshot SWT_SavedAnimation
             edtStatus.text = "已恢复保存动画：" + count as string + " 个选中骨骼。"
+        )
+    )
+
+    on btnDeleteAnimation pressed do
+    (
+        if lbAnimList.selection == 0 then
+            edtStatus.text = "请先在列表中选择要删除的动画。"
+        else
+        (
+            local animName = lbAnimList.items[lbAnimList.selection]
+            if queryBox ("确定删除动画『" + animName + "』？此操作不可恢复。") title:"删除动画" then
+            (
+                local n = SWTUtil.deleteSharedAnimation animName
+                SWT_Rollout.refreshAnimList()
+                edtStatus.text = "已删除动画『" + animName + "』（" + n as string + " 个文件）。"
+            )
+            else
+                edtStatus.text = "已取消删除。"
         )
     )
 
