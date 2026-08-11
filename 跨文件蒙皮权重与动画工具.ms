@@ -1,0 +1,540 @@
+-- Cross-File Skin Weight Copy + Animation Restore
+-- v3.2.3 - fix: sortTracksParentFirst used copy on struct array (returns OK) -> use collect; apply sorted parent-first order
+-- v3.2.2 - streamline UI: copy/save publish automatically
+-- v3.2.1 - fix: local Bone animation shared data parentheses
+-- v3.2.0 - fix: save/apply selected Bone animation in parent-local space
+-- v3.1.8 - fix: escape Windows path when serializing shared BIP
+-- v3.1.7 - fix: shared animation outer array closing parenthesis
+-- v3.1.6 - fix: shared track closing parentheses
+-- v3.1.5 - fix: shared track frames/transforms array separator
+-- v3.1.4 - fix: serialize cross-session animation as arrays, not struct constructors
+-- v3.1.3 - fix: shared animation track serialization
+-- v3.1.2 - animation sharing diagnostics and publish result validation
+-- v3.1.1 - fix: biped figureMode check used non-existent getFigureMode
+-- v3.1.0 - shared Biped and selected-bone animation transfer
+
+try(destroyDialog SWT_Rollout)catch()
+
+global SWT_CopiedWeights
+global SWT_CopiedWeightsVer
+global SWT_SharedWeights
+global SWT_SharedWeightsVer
+global SWT_SavedAnimation
+global SWT_SharedAnimation
+global SWTUtil
+
+struct SWTAnimTrack
+(
+    nodeName,
+    frames = #(),
+    positions = #(),
+    rotations = #()
+)
+
+struct SWTAnimSnapshot
+(
+    startFrame,
+    endFrame,
+    bipedRootName,
+    bipedFile,
+    tracks = #()
+)
+
+struct SWTUtil
+(
+    fn getSkinModifier node =
+    (
+        if node == undefined do return undefined
+        for mod in node.modifiers where classOf mod == Skin do return mod
+        undefined
+    ),
+
+    fn getSharedWeightsPath =
+    (
+        (getDir #temp) + "\\SWT_SharedWeights.ms"
+    ),
+
+    fn getWorldVert node mesh vertIndex =
+    (
+        (getVert mesh vertIndex) * node.objectTransform
+    ),
+
+    fn getSharedAnimationPath =
+    (
+        (getDir #temp) + "\\SWT_SharedAnimation.ms"
+    ),
+
+    fn getSharedBipPath =
+    (
+        (getDir #temp) + "\\SWT_SharedBiped.bip"
+    ),
+
+    fn getTempBipPath prefix =
+    (
+        (getDir #temp) + "\\" + prefix + "_" + (timestamp() as string) + ".bip"
+    ),
+
+    fn ensureBipedAnimMode root =
+    (
+        if root == undefined do return undefined
+        local ctrl = root.controller
+        if ctrl == undefined do return undefined
+        try (if ctrl.figureMode do biped.setFigureMode ctrl false) catch()
+        ctrl
+    ),
+
+    fn findBipedRoot =
+    (
+        for obj in objects do
+        (
+            try (if (classOf obj.controller as string) == "Vertical_Horizontal_Turn" do return obj) catch()
+        )
+        for obj in objects do
+        (
+            try (if (classOf obj.controller as string) == "BipSlave_Control" do return obj.controller.rootNode) catch()
+        )
+        undefined
+    ),
+
+    fn isBipedNode node =
+    (
+        try
+        (
+            local className = classOf node.controller as string
+            className == "Vertical_Horizontal_Turn" or className == "BipSlave_Control"
+        ) catch (false)
+    ),
+
+    fn getSelectedAnimNodes =
+    (
+        for obj in selection where not (SWTUtil.isBipedNode obj) collect obj
+    ),
+
+    fn captureTracks nodes =
+    (
+        local result = #()
+        local startFrame = animationRange.start.frame as integer
+        local endFrame = animationRange.end.frame as integer
+        disableSceneRedraw()
+        for node in nodes where isValidNode node do
+        (
+            local track = SWTAnimTrack nodeName:node.name
+            for frame = startFrame to endFrame do
+            (
+                local t = frame as time
+                local worldTM = at time t node.transform
+                local parentTM = if node.parent != undefined then (at time t node.parent.transform) else (matrix3 1)
+                local localTM = worldTM * (inverse parentTM)
+                append track.frames frame
+                append track.positions localTM.pos
+                append track.rotations (localTM.rotation as quat)
+            )
+            append result track
+        )
+        enableSceneRedraw()
+        result
+    ),
+
+    fn sortTracksParentFirst tracks =
+    (
+        local pending = for t in tracks collect t
+        local sorted = #()
+        while pending.count > 0 do
+        (
+            local foundIndex = 0
+            for i = 1 to pending.count while foundIndex == 0 do
+            (
+                local node = getNodeByName pending[i].nodeName exact:true
+                if node == undefined or node.parent == undefined or (findItem (for t in pending collect t.nodeName) node.parent.name) == 0 do
+                    foundIndex = i
+            )
+            if foundIndex == 0 then foundIndex = 1
+            append sorted pending[foundIndex]
+            deleteItem pending foundIndex
+        )
+        sorted
+    ),
+
+    fn applyTracks tracks =
+    (
+        local applied = 0
+        local sortedTracks = SWTUtil.sortTracksParentFirst tracks
+        disableSceneRedraw()
+        for track in sortedTracks do
+        (
+            local node = getNodeByName track.nodeName exact:true
+            if node != undefined do
+            (
+                try
+                (
+                    try (deleteKeys node.pos.controller #allKeys) catch()
+                    try (deleteKeys node.rotation.controller #allKeys) catch()
+                    node.pos.controller = Bezier_Position()
+                    node.rotation.controller = Euler_XYZ()
+                    animate on for i = 1 to track.frames.count do
+                        at time (track.frames[i] as time)
+                        (
+                            local parentTM = if node.parent != undefined then (at time (track.frames[i] as time) node.parent.transform) else (matrix3 1)
+                            local localTM = track.rotations[i] as matrix3
+                            localTM.pos = track.positions[i]
+                            node.transform = localTM * parentTM
+                        )
+                    applied += 1
+                ) catch()
+            )
+        )
+        enableSceneRedraw()
+        applied
+    ),
+
+    fn saveCurrentAnimation =
+    (
+        local root = SWTUtil.findBipedRoot()
+        local snap = SWTAnimSnapshot()
+        snap.startFrame = animationRange.start.frame as integer
+        snap.endFrame = animationRange.end.frame as integer
+        snap.bipedRootName = if root != undefined then root.name else ""
+        snap.tracks = SWTUtil.captureTracks (SWTUtil.getSelectedAnimNodes())
+        if root != undefined do
+        (
+            SWTUtil.ensureBipedAnimMode root
+            snap.bipedFile = SWTUtil.getTempBipPath "SWT_SavedBiped"
+            try (biped.saveBipFile root.controller snap.bipedFile) catch (snap.bipedFile = "")
+        )
+        global SWT_SavedAnimation = snap
+        snap
+    ),
+
+    fn applySnapshot snap =
+    (
+        if snap == undefined do return -1
+        animationRange = interval (snap.startFrame as time) (snap.endFrame as time)
+        local root = SWTUtil.findBipedRoot()
+        if root != undefined and snap.bipedFile != undefined and snap.bipedFile != "" and doesFileExist snap.bipedFile do
+        (
+            SWTUtil.ensureBipedAnimMode root
+            try (biped.loadBipFile root.controller snap.bipedFile #noRedraw) catch()
+        )
+        SWTUtil.applyTracks snap.tracks
+    ),
+
+    fn saveSharedAnimation =
+    (
+        if SWT_SavedAnimation == undefined do return false
+        local f = createFile (SWTUtil.getSharedAnimationPath())
+        if f == undefined do return false
+        local sourceBip = SWT_SavedAnimation.bipedFile
+        local sharedBip = ""
+        if sourceBip != undefined and sourceBip != "" and doesFileExist sourceBip do
+        (
+            sharedBip = SWTUtil.getSharedBipPath()
+            if doesFileExist sharedBip do deleteFile sharedBip
+            if not (copyFile sourceBip sharedBip) do return false
+        )
+        if SWT_SavedAnimation.bipedRootName != "" and sharedBip == "" do return false
+        local serializedBip = substituteString sharedBip "\\" "\\\\"
+        format "global SWT_SharedAnimationData = #(% ,% ,\"%\",\"%\",#(\n" SWT_SavedAnimation.startFrame SWT_SavedAnimation.endFrame SWT_SavedAnimation.bipedRootName serializedBip to:f
+        for trackIndex = 1 to SWT_SavedAnimation.tracks.count do
+        (
+            local track = SWT_SavedAnimation.tracks[trackIndex]
+            format "#(\"%\",#(" track.nodeName to:f
+            for i = 1 to track.frames.count do
+            (
+                if i > 1 do format "," to:f
+                format "%" track.frames[i] to:f
+            )
+            format "),#(" to:f
+            for i = 1 to track.positions.count do
+            (
+                if i > 1 do format "," to:f
+                format "%" track.positions[i] to:f
+            )
+            format "),#(" to:f
+            for i = 1 to track.rotations.count do
+            (
+                if i > 1 do format "," to:f
+                format "%" track.rotations[i] to:f
+            )
+            format "))" to:f
+            if trackIndex < SWT_SavedAnimation.tracks.count do format ",\n" to:f
+        )
+        format "))\n" to:f
+        close f
+        true
+    ),
+
+    fn loadSharedAnimation =
+    (
+        local path = SWTUtil.getSharedAnimationPath()
+        if not doesFileExist path do return #("missing", path)
+        global SWT_SharedAnimation = undefined
+        global SWT_SharedAnimationData = undefined
+        try (fileIn path quiet:true) catch (return #("invalid", (getCurrentException() as string)))
+        if SWT_SharedAnimationData == undefined or SWT_SharedAnimationData.count != 5 do return #("invalid", "共享动画数据为空")
+        local data = SWT_SharedAnimationData
+        local snap = SWTAnimSnapshot startFrame:data[1] endFrame:data[2] bipedRootName:data[3] bipedFile:data[4]
+        for rawTrack in data[5] do
+            append snap.tracks (SWTAnimTrack nodeName:rawTrack[1] frames:rawTrack[2] positions:rawTrack[3] rotations:rawTrack[4])
+        global SWT_SharedAnimation = snap
+        if snap.bipedRootName != "" and (not doesFileExist snap.bipedFile) do
+            return #("missingBip", snap.bipedFile)
+        local applied = SWTUtil.applySnapshot snap
+        #("ok", applied)
+    ),
+
+    fn saveSharedWeights =
+    (
+        if SWT_CopiedWeights == undefined or SWT_CopiedWeights.count == 0 do return false
+        local f = createFile (SWTUtil.getSharedWeightsPath())
+        if f == undefined do return false
+
+        format "global SWT_SharedWeightsVer = 3\n" to:f
+        format "global SWT_SharedWeights = #(\n" to:f
+        for entryIndex = 1 to SWT_CopiedWeights.count do
+        (
+            local entry = SWT_CopiedWeights[entryIndex]
+            local boneNames = entry[1]
+            local weights = entry[2]
+            local pos = entry[3]
+            format "#(#(" to:f
+            for i = 1 to boneNames.count do
+            (
+                if i > 1 do format "," to:f
+                format "\"%\"" boneNames[i] to:f
+            )
+            format "),#(" to:f
+            for i = 1 to weights.count do
+            (
+                if i > 1 do format "," to:f
+                format "%" (formattedPrint weights[i] format:".9f") to:f
+            )
+            format "),[%,%,%])" pos.x pos.y pos.z to:f
+            if entryIndex < SWT_CopiedWeights.count do format ",\n" to:f
+        )
+        format "\n)\n" to:f
+        close f
+        true
+    ),
+
+    fn loadSharedWeights =
+    (
+        local path = SWTUtil.getSharedWeightsPath()
+        if not doesFileExist path do return false
+        global SWT_SharedWeights = undefined
+        global SWT_SharedWeightsVer = undefined
+        try(fileIn path quiet:true)catch(return false)
+        if SWT_SharedWeights == undefined or SWT_SharedWeights.count == 0 do return false
+        global SWT_CopiedWeights = SWT_SharedWeights
+        global SWT_CopiedWeightsVer = SWT_SharedWeightsVer
+        true
+    ),
+
+    fn copySelectedWeights node =
+    (
+        local skin = SWTUtil.getSkinModifier node
+        if skin == undefined do return false
+
+        select node
+        max modify mode
+        modPanel.setCurrentObject skin
+        subObjectLevel = 1
+
+        local selectedVerts = skinOps.GetSelectedVertices skin
+        if selectedVerts.count == 0 do return false
+
+        local mesh = snapshotAsMesh node
+        local copied = #()
+        for vertIndex in selectedVerts do
+        (
+            local boneNames = #()
+            local weights = #()
+            local count = skinOps.GetVertexWeightCount skin vertIndex
+            for i = 1 to count do
+            (
+                local boneId = skinOps.GetVertexWeightBoneID skin vertIndex i
+                local weight = skinOps.GetVertexWeight skin vertIndex i
+                if weight > 0.0 do
+                (
+                    append boneNames (skinOps.GetBoneName skin boneId 0)
+                    append weights weight
+                )
+            )
+            append copied #(boneNames, weights, SWTUtil.getWorldVert node mesh vertIndex)
+        )
+        global SWT_CopiedWeights = copied
+        global SWT_CopiedWeightsVer = 3
+        SWTUtil.saveSharedWeights()
+    ),
+
+    fn getNearestEntry entries targetPosition =
+    (
+        local nearest = 1
+        local nearestDistance = 1e30
+        for i = 1 to entries.count do
+        (
+            local d = distance targetPosition entries[i][3]
+            if d < nearestDistance do
+            (
+                nearest = i
+                nearestDistance = d
+            )
+        )
+        entries[nearest]
+    ),
+
+    fn pasteSelectedWeights node =
+    (
+        if SWT_CopiedWeights == undefined or SWT_CopiedWeights.count == 0 do return -1
+
+        local skin = SWTUtil.getSkinModifier node
+        if skin == undefined do return -2
+
+        select node
+        max modify mode
+        modPanel.setCurrentObject skin
+        subObjectLevel = 1
+
+        local selectedVerts = skinOps.GetSelectedVertices skin
+        if selectedVerts.count == 0 do return -3
+
+        local targetBoneNames = #()
+        local targetBoneIds = #()
+        for boneId = 1 to skinOps.GetNumberBones skin do
+        (
+            append targetBoneNames (skinOps.GetBoneName skin boneId 0)
+            append targetBoneIds boneId
+        )
+
+        local mesh = snapshotAsMesh node
+        local pasted = 0
+        for i = 1 to selectedVerts.count do
+        (
+            local entry = undefined
+            if SWT_CopiedWeights.count == 1 then
+                entry = SWT_CopiedWeights[1]
+            else if SWT_CopiedWeights.count == selectedVerts.count then
+                entry = SWT_CopiedWeights[i]
+            else
+                entry = SWTUtil.getNearestEntry SWT_CopiedWeights (SWTUtil.getWorldVert node mesh selectedVerts[i])
+
+            local mappedBoneIds = #()
+            local mappedWeights = #()
+            for j = 1 to entry[1].count do
+            (
+                local found = findItem targetBoneNames entry[1][j]
+                if found > 0 do
+                (
+                    append mappedBoneIds targetBoneIds[found]
+                    append mappedWeights entry[2][j]
+                )
+            )
+            if mappedBoneIds.count > 0 do
+            (
+                skinOps.ReplaceVertexWeights skin selectedVerts[i] mappedBoneIds mappedWeights
+                pasted += 1
+            )
+        )
+        pasted
+    )
+)
+
+rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:280
+(
+    label lblWeightInfo "权重：选择带 Skin 的模型顶点后复制；另一文件刷新、选择顶点后粘贴。" pos:[15,15] width:270 height:32
+    button btnCopy "复制选中顶点权重" pos:[15,55] width:270 height:25
+    button btnRefresh "刷新共享权重" pos:[15,85] width:130 height:25
+    button btnPaste "粘贴到选中顶点" pos:[155,85] width:130 height:25
+
+    groupBox grpAnimation "动画（不打开 .max 文件）" pos:[10,120] width:280 height:115
+    label lblAnimInfo "保存当前 BIP + 当前选中骨骼动画。另一 Max 窗口可发布/导入。" pos:[20,140] width:260 height:30
+    button btnSaveAnimation "保存当前动画" pos:[20,172] width:125 height:25
+    button btnPublishAnimation "发布给另一 Max" pos:[155,172] width:125 height:25
+    button btnImportAnimation "导入共享动画" pos:[20,202] width:125 height:25
+    button btnRestoreAnimation "恢复保存动画" pos:[155,202] width:125 height:25
+
+    editText edtStatus "" pos:[15,240] width:270 height:20 readOnly:true
+    button btnClose "关闭" pos:[105,263] width:90 height:20
+
+    on btnCopy pressed do
+    (
+        if selection.count == 0 then
+            edtStatus.text = "请选择带 Skin 的模型和顶点。"
+        else if SWTUtil.copySelectedWeights selection[1] then
+            edtStatus.text = "已复制 " + SWT_CopiedWeights.count as string + " 个顶点权重。"
+        else
+            edtStatus.text = "复制失败：请在 Skin 顶点级别选择顶点。"
+    )
+
+    on btnRefresh pressed do
+    (
+        if SWTUtil.loadSharedWeights() then
+            edtStatus.text = "已刷新 " + SWT_CopiedWeights.count as string + " 个顶点权重。"
+        else
+            edtStatus.text = "没有共享权重，请先在另一窗口复制。"
+    )
+
+    on btnPaste pressed do
+    (
+        if selection.count == 0 then
+            edtStatus.text = "请选择带 Skin 的目标模型和顶点。"
+        else
+        (
+            local result = SWTUtil.pasteSelectedWeights selection[1]
+            if result > 0 then
+                edtStatus.text = "已粘贴 " + result as string + " 个顶点权重。"
+            else if result == -1 then
+                edtStatus.text = "请先复制后刷新共享权重。"
+            else if result == -2 then
+                edtStatus.text = "目标模型没有 Skin 修改器。"
+            else
+                edtStatus.text = "粘贴失败：请在 Skin 顶点级别选择顶点。"
+        )
+    )
+
+    on btnSaveAnimation pressed do
+    (
+        local snap = SWTUtil.saveCurrentAnimation()
+        if SWTUtil.saveSharedAnimation() then
+            edtStatus.text = "已保存并发布：BIP + " + snap.tracks.count as string + " 个选中骨骼动画。"
+        else
+            edtStatus.text = "保存失败：未检测到 Biped，或 BIP 写入失败。"
+    )
+
+    on btnPublishAnimation pressed do
+    (
+        if SWT_SavedAnimation == undefined then
+            edtStatus.text = "请先保存当前动画。"
+        else if SWTUtil.saveSharedAnimation() then
+            edtStatus.text = "动画已发布给另一 Max。"
+        else
+            edtStatus.text = "发布失败：BIP 写入或共享文件复制失败。"
+    )
+
+    on btnImportAnimation pressed do
+    (
+        local result = SWTUtil.loadSharedAnimation()
+        if result[1] == "ok" then
+            edtStatus.text = "已导入共享 BIP + " + result[2] as string + " 个选中骨骼动画。"
+        else if result[1] == "missing" then
+            edtStatus.text = "找不到共享动画：" + result[2]
+        else if result[1] == "missingBip" then
+            edtStatus.text = "找到动画数据，但 BIP 缺失：" + result[2]
+        else
+            edtStatus.text = "共享动画无效：" + result[2]
+    )
+
+    on btnRestoreAnimation pressed do
+    (
+        if SWT_SavedAnimation == undefined then
+            edtStatus.text = "没有已保存动画。"
+        else
+        (
+            local count = SWTUtil.applySnapshot SWT_SavedAnimation
+            edtStatus.text = "已恢复保存动画：" + count as string + " 个选中骨骼。"
+        )
+    )
+
+    on btnClose pressed do destroyDialog SWT_Rollout
+)
+
+createDialog SWT_Rollout style:#(#style_titlebar, #style_sysmenu, #style_toolwindow)
