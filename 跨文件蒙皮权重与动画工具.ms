@@ -1,4 +1,5 @@
 -- Cross-File Skin Weight Copy + Animation Restore
+-- v3.2.4 - remove redundant "publish to another Max" button (save auto-publishes)
 -- v3.2.3 - fix: sortTracksParentFirst used copy on struct array (returns OK) -> use collect; apply sorted parent-first order
 -- v3.2.2 - streamline UI: copy/save publish automatically
 -- v3.2.1 - fix: local Bone animation shared data parentheses
@@ -446,9 +447,8 @@ rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:280
     button btnPaste "粘贴到选中顶点" pos:[155,85] width:130 height:25
 
     groupBox grpAnimation "动画（不打开 .max 文件）" pos:[10,120] width:280 height:115
-    label lblAnimInfo "保存当前 BIP + 当前选中骨骼动画。另一 Max 窗口可发布/导入。" pos:[20,140] width:260 height:30
-    button btnSaveAnimation "保存当前动画" pos:[20,172] width:125 height:25
-    button btnPublishAnimation "发布给另一 Max" pos:[155,172] width:125 height:25
+    label lblAnimInfo "保存当前 BIP + 当前选中骨骼动画（自动生成缓存）。另一文件导入即可。" pos:[20,140] width:260 height:30
+    button btnSaveAnimation "保存当前动画" pos:[20,172] width:270 height:25
     button btnImportAnimation "导入共享动画" pos:[20,202] width:125 height:25
     button btnRestoreAnimation "恢复保存动画" pos:[155,202] width:125 height:25
 
@@ -498,16 +498,6 @@ rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:280
             edtStatus.text = "已保存并发布：BIP + " + snap.tracks.count as string + " 个选中骨骼动画。"
         else
             edtStatus.text = "保存失败：未检测到 Biped，或 BIP 写入失败。"
-    )
-
-    on btnPublishAnimation pressed do
-    (
-        if SWT_SavedAnimation == undefined then
-            edtStatus.text = "请先保存当前动画。"
-        else if SWTUtil.saveSharedAnimation() then
-            edtStatus.text = "动画已发布给另一 Max。"
-        else
-            edtStatus.text = "发布失败：BIP 写入或共享文件复制失败。"
     )
 
     on btnImportAnimation pressed do
