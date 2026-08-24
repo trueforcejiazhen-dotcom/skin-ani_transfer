@@ -168,7 +168,7 @@ struct SWTUtil
             if framemode == "keyframe" then
             (
                 local keyFrames = #()
-                local fn collectCtrlKeys ctrl =
+                fn collectCtrlKeys ctrl =
                     if ctrl != undefined do
                     (
                         try (for k in ctrl.keys do append keyFrames (k.time.frame as integer)) catch()
@@ -289,7 +289,7 @@ struct SWTUtil
     (
         local minFrame = undefined
         local maxFrame = undefined
-        local fn scanCtrl ctrl =
+        fn scanCtrl ctrl =
             (
                 local frames = #()
                 if ctrl != undefined do
