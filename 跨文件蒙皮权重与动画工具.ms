@@ -169,13 +169,17 @@ struct SWTUtil
             (
                 local keyFrames = #()
                 fn collectCtrlKeys ctrl =
-                    if ctrl != undefined do
                     (
-                        try (for k in ctrl.keys do append keyFrames (k.time.frame as integer)) catch()
-                        try (for i = 1 to ctrl.numSubAnims do (if ctrl.subAnim[i] != undefined do collectCtrlKeys ctrl.subAnim[i])) catch()
+                        local frames = #()
+                        if ctrl != undefined do
+                        (
+                            try (for k in ctrl.keys do append frames (k.time.frame as integer)) catch()
+                            try (for i = 1 to ctrl.numSubAnims do (if ctrl.subAnim[i] != undefined do (for x in (collectCtrlKeys ctrl.subAnim[i]) do append frames x))) catch()
+                        )
+                        frames
                     )
-                collectCtrlKeys node.pos.controller
-                collectCtrlKeys node.rotation.controller
+                for x in (collectCtrlKeys node.pos.controller) do append keyFrames x
+                for x in (collectCtrlKeys node.rotation.controller) do append keyFrames x
                 sort keyFrames
                 local uniqueFrames = #()
                 for f in keyFrames do
