@@ -1,4 +1,5 @@
 -- Cross-File Skin Weight Copy + Animation Restore
+-- v3.3.3 - fix: world-space apply lost positions (quat->matrix3 has zero pos); hoist collectCtrlKeys to struct method; close file handle on save failure
 -- v3.3.2 - fix: keyframe capture/range now reads sub-anim channel keys (Position_XYZ/Euler_XYZ store keys on bezier_float children, not on composite controller)
 -- v3.3.1 - add keyframe-only capture mode (dropdown: keyframe/bake) for selected-bone animation
 -- v3.3.0 - add world space option for selected-bone animation capture/apply (dropdown: local/world)
@@ -156,6 +157,17 @@ struct SWTUtil
         for obj in selection where not (SWTUtil.isBipedNode obj) collect obj
     ),
 
+    fn collectCtrlKeys ctrl =
+    (
+        local frames = #()
+        if ctrl != undefined do
+        (
+            try (for k in ctrl.keys do append frames (k.time.frame as integer)) catch()
+            try (for i = 1 to ctrl.numSubAnims do (if ctrl.subAnim[i] != undefined do (for x in (SWTUtil.collectCtrlKeys ctrl.subAnim[i]) do append frames x))) catch()
+        )
+        frames
+    ),
+
     fn captureTracks nodes space framemode =
     (
         local result = #()
@@ -168,18 +180,8 @@ struct SWTUtil
             if framemode == "keyframe" then
             (
                 local keyFrames = #()
-                fn collectCtrlKeys ctrl =
-                    (
-                        local frames = #()
-                        if ctrl != undefined do
-                        (
-                            try (for k in ctrl.keys do append frames (k.time.frame as integer)) catch()
-                            try (for i = 1 to ctrl.numSubAnims do (if ctrl.subAnim[i] != undefined do (for x in (collectCtrlKeys ctrl.subAnim[i]) do append frames x))) catch()
-                        )
-                        frames
-                    )
-                for x in (collectCtrlKeys node.pos.controller) do append keyFrames x
-                for x in (collectCtrlKeys node.rotation.controller) do append keyFrames x
+                for x in (SWTUtil.collectCtrlKeys node.pos.controller) do append keyFrames x
+                for x in (SWTUtil.collectCtrlKeys node.rotation.controller) do append keyFrames x
                 sort keyFrames
                 local uniqueFrames = #()
                 for f in keyFrames do
@@ -272,7 +274,11 @@ struct SWTUtil
                         at time (track.frames[i] as time)
                         (
                             if space == "world" then
-                                node.transform = track.rotations[i] as matrix3
+                            (
+                                local worldTM = track.rotations[i] as matrix3
+                                worldTM.pos = track.positions[i]
+                                node.transform = worldTM
+                            )
                             else
                             (
                                 local parentTM = if node.parent != undefined then (at time (track.frames[i] as time) node.parent.transform) else (matrix3 1)
@@ -293,21 +299,11 @@ struct SWTUtil
     (
         local minFrame = undefined
         local maxFrame = undefined
-        fn scanCtrl ctrl =
-            (
-                local frames = #()
-                if ctrl != undefined do
-                (
-                    try (for k in ctrl.keys do append frames (k.time.frame as integer)) catch()
-                    try (for i = 1 to ctrl.numSubAnims do (if ctrl.subAnim[i] != undefined do (for x in (scanCtrl ctrl.subAnim[i]) do append frames x))) catch()
-                )
-                frames
-            )
         for obj in (SWTUtil.getSelectedAnimNodes()) where isValidNode obj do
         (
             local frames = #()
-            try ( for x in (scanCtrl obj.pos.controller) do append frames x ) catch()
-            try ( for x in (scanCtrl obj.rotation.controller) do append frames x ) catch()
+            try ( for x in (SWTUtil.collectCtrlKeys obj.pos.controller) do append frames x ) catch()
+            try ( for x in (SWTUtil.collectCtrlKeys obj.rotation.controller) do append frames x ) catch()
             for f in frames do
             (
                 if minFrame == undefined or f < minFrame do minFrame = f
@@ -365,9 +361,9 @@ struct SWTUtil
         (
             sharedBip = animDir + "\\" + name + ".bip"
             if doesFileExist sharedBip do deleteFile sharedBip
-            if not (copyFile sourceBip sharedBip) do return false
+            if not (copyFile sourceBip sharedBip) do ( close f; return false )
         )
-        if SWT_SavedAnimation.bipedRootName != "" and sharedBip == "" do return false
+        if SWT_SavedAnimation.bipedRootName != "" and sharedBip == "" do ( close f; return false )
         local serializedBip = substituteString sharedBip "\\" "\\\\"
         local serializedSpace = SWT_SavedAnimation.space
         if serializedSpace == undefined do serializedSpace = "local"
