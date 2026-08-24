@@ -1,4 +1,5 @@
 -- Cross-File Skin Weight Copy + Animation Restore
+-- v3.3.2 - fix: keyframe capture/range now reads sub-anim channel keys (Position_XYZ/Euler_XYZ store keys on bezier_float children, not on composite controller)
 -- v3.3.1 - add keyframe-only capture mode (dropdown: keyframe/bake) for selected-bone animation
 -- v3.3.0 - add world space option for selected-bone animation capture/apply (dropdown: local/world)
 -- v3.2.6 - save/import/restore auto-fit animation range (save computes keyframe range of selected bones)
@@ -167,10 +168,14 @@ struct SWTUtil
             if framemode == "keyframe" then
             (
                 local keyFrames = #()
-                for ctrl in #(node.pos.controller, node.rotation.controller) where ctrl != undefined do
-                (
-                    try (for k in ctrl.keys do append keyFrames (k.time.frame as integer)) catch()
-                )
+                local fn collectCtrlKeys ctrl =
+                    if ctrl != undefined do
+                    (
+                        try (for k in ctrl.keys do append keyFrames (k.time.frame as integer)) catch()
+                        try (for i = 1 to ctrl.numSubAnims do (if ctrl.subAnim[i] != undefined do collectCtrlKeys ctrl.subAnim[i])) catch()
+                    )
+                collectCtrlKeys node.pos.controller
+                collectCtrlKeys node.rotation.controller
                 sort keyFrames
                 local uniqueFrames = #()
                 for f in keyFrames do
@@ -284,26 +289,25 @@ struct SWTUtil
     (
         local minFrame = undefined
         local maxFrame = undefined
-        for obj in (SWTUtil.getSelectedAnimNodes()) where isValidNode obj do
-        (
-            local posCtrl = undefined
-            local rotCtrl = undefined
-            try ( posCtrl = obj.pos.controller ) catch()
-            try ( rotCtrl = obj.rotation.controller ) catch()
-            for ctrl in #(posCtrl, rotCtrl) do
+        local fn scanCtrl ctrl =
             (
+                local frames = #()
                 if ctrl != undefined do
                 (
-                    try
-                    (
-                        for k in ctrl.keys do
-                        (
-                            local f = k.time.frame as integer
-                            if minFrame == undefined or f < minFrame do minFrame = f
-                            if maxFrame == undefined or f > maxFrame do maxFrame = f
-                        )
-                    ) catch()
+                    try (for k in ctrl.keys do append frames (k.time.frame as integer)) catch()
+                    try (for i = 1 to ctrl.numSubAnims do (if ctrl.subAnim[i] != undefined do (for x in (scanCtrl ctrl.subAnim[i]) do append frames x))) catch()
                 )
+                frames
+            )
+        for obj in (SWTUtil.getSelectedAnimNodes()) where isValidNode obj do
+        (
+            local frames = #()
+            try ( for x in (scanCtrl obj.pos.controller) do append frames x ) catch()
+            try ( for x in (scanCtrl obj.rotation.controller) do append frames x ) catch()
+            for f in frames do
+            (
+                if minFrame == undefined or f < minFrame do minFrame = f
+                if maxFrame == undefined or f > maxFrame do maxFrame = f
             )
         )
         if minFrame == undefined then undefined else #(minFrame, maxFrame)
