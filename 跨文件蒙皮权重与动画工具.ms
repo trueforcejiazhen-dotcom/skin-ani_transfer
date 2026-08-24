@@ -1,5 +1,6 @@
 -- Cross-File Skin Weight Copy + Animation Restore
--- v3.2.7 - delete animation; persistent cache dir (survives Max restart, manual delete only)
+-- v3.3.1 - add keyframe-only capture mode (dropdown: keyframe/bake) for selected-bone animation
+-- v3.3.0 - add world space option for selected-bone animation capture/apply (dropdown: local/world)
 -- v3.2.6 - save/import/restore auto-fit animation range (save computes keyframe range of selected bones)
 -- v3.2.5 - named multi-animation save; list + select to import
 -- v3.2.4 - remove redundant "publish to another Max" button (save auto-publishes)
@@ -26,6 +27,8 @@ global SWT_SharedWeightsVer
 global SWT_SavedAnimation
 global SWT_SharedAnimation
 global SWTUtil
+global SWT_CurrentSpace = "local"
+global SWT_FrameMode = "keyframe"
 
 struct SWTAnimTrack
 (
@@ -41,7 +44,8 @@ struct SWTAnimSnapshot
     endFrame,
     bipedRootName,
     bipedFile,
-    tracks = #()
+    tracks = #(),
+    space = "local"
 )
 
 struct SWTUtil
@@ -151,7 +155,7 @@ struct SWTUtil
         for obj in selection where not (SWTUtil.isBipedNode obj) collect obj
     ),
 
-    fn captureTracks nodes =
+    fn captureTracks nodes space framemode =
     (
         local result = #()
         local startFrame = animationRange.start.frame as integer
@@ -160,15 +164,58 @@ struct SWTUtil
         for node in nodes where isValidNode node do
         (
             local track = SWTAnimTrack nodeName:node.name
-            for frame = startFrame to endFrame do
+            if framemode == "keyframe" then
             (
-                local t = frame as time
-                local worldTM = at time t node.transform
-                local parentTM = if node.parent != undefined then (at time t node.parent.transform) else (matrix3 1)
-                local localTM = worldTM * (inverse parentTM)
-                append track.frames frame
-                append track.positions localTM.pos
-                append track.rotations (localTM.rotation as quat)
+                local keyFrames = #()
+                for ctrl in #(node.pos.controller, node.rotation.controller) where ctrl != undefined do
+                (
+                    try (for k in ctrl.keys do append keyFrames (k.time.frame as integer)) catch()
+                )
+                sort keyFrames
+                local uniqueFrames = #()
+                for f in keyFrames do
+                    if uniqueFrames.count == 0 or f != uniqueFrames[uniqueFrames.count] do append uniqueFrames f
+                for frame in uniqueFrames where frame >= startFrame and frame <= endFrame do
+                (
+                    local t = frame as time
+                    local worldTM = at time t node.transform
+                    if space == "world" then
+                    (
+                        append track.frames frame
+                        append track.positions worldTM.pos
+                        append track.rotations (worldTM.rotation as quat)
+                    )
+                    else
+                    (
+                        local parentTM = if node.parent != undefined then (at time t node.parent.transform) else (matrix3 1)
+                        local localTM = worldTM * (inverse parentTM)
+                        append track.frames frame
+                        append track.positions localTM.pos
+                        append track.rotations (localTM.rotation as quat)
+                    )
+                )
+            )
+            else
+            (
+                for frame = startFrame to endFrame do
+                (
+                    local t = frame as time
+                    local worldTM = at time t node.transform
+                    if space == "world" then
+                    (
+                        append track.frames frame
+                        append track.positions worldTM.pos
+                        append track.rotations (worldTM.rotation as quat)
+                    )
+                    else
+                    (
+                        local parentTM = if node.parent != undefined then (at time t node.parent.transform) else (matrix3 1)
+                        local localTM = worldTM * (inverse parentTM)
+                        append track.frames frame
+                        append track.positions localTM.pos
+                        append track.rotations (localTM.rotation as quat)
+                    )
+                )
             )
             append result track
         )
@@ -196,7 +243,7 @@ struct SWTUtil
         sorted
     ),
 
-    fn applyTracks tracks =
+    fn applyTracks tracks space =
     (
         local applied = 0
         local sortedTracks = SWTUtil.sortTracksParentFirst tracks
@@ -215,10 +262,15 @@ struct SWTUtil
                     animate on for i = 1 to track.frames.count do
                         at time (track.frames[i] as time)
                         (
-                            local parentTM = if node.parent != undefined then (at time (track.frames[i] as time) node.parent.transform) else (matrix3 1)
-                            local localTM = track.rotations[i] as matrix3
-                            localTM.pos = track.positions[i]
-                            node.transform = localTM * parentTM
+                            if space == "world" then
+                                node.transform = track.rotations[i] as matrix3
+                            else
+                            (
+                                local parentTM = if node.parent != undefined then (at time (track.frames[i] as time) node.parent.transform) else (matrix3 1)
+                                local localTM = track.rotations[i] as matrix3
+                                localTM.pos = track.positions[i]
+                                node.transform = localTM * parentTM
+                            )
                         )
                     applied += 1
                 ) catch()
@@ -267,7 +319,8 @@ struct SWTUtil
         snap.startFrame = animationRange.start.frame as integer
         snap.endFrame = animationRange.end.frame as integer
         snap.bipedRootName = if root != undefined then root.name else ""
-        snap.tracks = SWTUtil.captureTracks (SWTUtil.getSelectedAnimNodes())
+        snap.space = SWT_CurrentSpace
+        snap.tracks = SWTUtil.captureTracks (SWTUtil.getSelectedAnimNodes()) snap.space SWT_FrameMode
         if root != undefined do
         (
             SWTUtil.ensureBipedAnimMode root
@@ -288,7 +341,7 @@ struct SWTUtil
             SWTUtil.ensureBipedAnimMode root
             try (biped.loadBipFile root.controller snap.bipedFile #noRedraw) catch()
         )
-        SWTUtil.applyTracks snap.tracks
+        SWTUtil.applyTracks snap.tracks snap.space
     ),
 
     fn saveSharedAnimation name =
@@ -308,7 +361,9 @@ struct SWTUtil
         )
         if SWT_SavedAnimation.bipedRootName != "" and sharedBip == "" do return false
         local serializedBip = substituteString sharedBip "\\" "\\\\"
-        format "global SWT_SharedAnimationData = #(% ,% ,\"%\",\"%\",#(\n" SWT_SavedAnimation.startFrame SWT_SavedAnimation.endFrame SWT_SavedAnimation.bipedRootName serializedBip to:f
+        local serializedSpace = SWT_SavedAnimation.space
+        if serializedSpace == undefined do serializedSpace = "local"
+        format "global SWT_SharedAnimationData = #(% ,% ,\"%\",\"%\",\"%\",#(\n" SWT_SavedAnimation.startFrame SWT_SavedAnimation.endFrame SWT_SavedAnimation.bipedRootName serializedBip serializedSpace to:f
         for trackIndex = 1 to SWT_SavedAnimation.tracks.count do
         (
             local track = SWT_SavedAnimation.tracks[trackIndex]
@@ -345,10 +400,12 @@ struct SWTUtil
         global SWT_SharedAnimation = undefined
         global SWT_SharedAnimationData = undefined
         try (fileIn path quiet:true) catch (return #("invalid", (getCurrentException() as string)))
-        if SWT_SharedAnimationData == undefined or SWT_SharedAnimationData.count != 5 do return #("invalid", "共享动画数据为空")
+        if SWT_SharedAnimationData == undefined or SWT_SharedAnimationData.count < 5 do return #("invalid", "共享动画数据为空")
         local data = SWT_SharedAnimationData
-        local snap = SWTAnimSnapshot startFrame:data[1] endFrame:data[2] bipedRootName:data[3] bipedFile:data[4]
-        for rawTrack in data[5] do
+        local snapSpace = if data.count >= 6 and data[5] != undefined then data[5] as string else "local"
+        local snap = SWTAnimSnapshot startFrame:data[1] endFrame:data[2] bipedRootName:data[3] bipedFile:data[4] space:snapSpace
+        local trackArrayIndex = if data.count >= 6 then 6 else 5
+        for rawTrack in data[trackArrayIndex] do
             append snap.tracks (SWTAnimTrack nodeName:rawTrack[1] frames:rawTrack[2] positions:rawTrack[3] rotations:rawTrack[4])
         global SWT_SharedAnimation = snap
         if snap.bipedRootName != "" and (not doesFileExist snap.bipedFile) do
@@ -513,25 +570,27 @@ struct SWTUtil
     )
 )
 
-rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:405
+rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:475
 (
     label lblWeightInfo "权重：选择带 Skin 的模型顶点后复制；另一文件刷新、选择顶点后粘贴。" pos:[15,15] width:270 height:32
     button btnCopy "复制选中顶点权重" pos:[15,55] width:270 height:25
     button btnRefresh "刷新共享权重" pos:[15,85] width:130 height:25
     button btnPaste "粘贴到选中顶点" pos:[155,85] width:130 height:25
 
-    groupBox grpAnimation "动画（不打开 .max 文件）" pos:[10,120] width:280 height:225
+    groupBox grpAnimation "动画（不打开 .max 文件）" pos:[10,120] width:280 height:285
     label lblAnimInfo "保存 BIP + 选中骨骼动画，可命名保存多个。" pos:[20,138] width:260 height:20
     editText edtAnimName "动画名:" pos:[20,160] width:260 height:18
-    button btnSaveAnimation "保存当前动画" pos:[20,184] width:270 height:25
-    button btnRefreshAnimList "刷新动画列表" pos:[20,214] width:130 height:25
-    button btnImportAnimation "导入选中动画" pos:[155,214] width:130 height:25
-    listbox lbAnimList "已保存动画:" pos:[20,244] width:270 height:4
-    button btnRestoreAnimation "恢复保存动画" pos:[20,312] width:130 height:25
-    button btnDeleteAnimation "删除选中动画" pos:[155,312] width:130 height:25
+    dropdownList ddlAnimSpace "空间模式:" pos:[20,184] width:260 height:30 items:#("local", "world")
+    dropdownList ddlAnimFrame "帧模式:" pos:[20,214] width:260 height:30 items:#("keyframe", "bake")
+    button btnSaveAnimation "保存当前动画" pos:[20,250] width:270 height:25
+    button btnRefreshAnimList "刷新动画列表" pos:[20,280] width:130 height:25
+    button btnImportAnimation "导入选中动画" pos:[155,280] width:130 height:25
+    listbox lbAnimList "已保存动画:" pos:[20,310] width:270 height:4
+    button btnRestoreAnimation "恢复保存动画" pos:[20,378] width:130 height:25
+    button btnDeleteAnimation "删除选中动画" pos:[155,378] width:130 height:25
 
-    editText edtStatus "" pos:[15,352] width:270 height:20 readOnly:true
-    button btnClose "关闭" pos:[105,378] width:90 height:20
+    editText edtStatus "" pos:[15,418] width:270 height:20 readOnly:true
+    button btnClose "关闭" pos:[105,448] width:90 height:20
 
     fn refreshAnimList =
     (
@@ -576,6 +635,18 @@ rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:405
         )
     )
 
+    on ddlAnimSpace selected arg do
+    (
+        SWT_CurrentSpace = ddlAnimSpace.items[arg]
+        edtStatus.text = "空间模式：" + SWT_CurrentSpace
+    )
+
+    on ddlAnimFrame selected arg do
+    (
+        SWT_FrameMode = ddlAnimFrame.items[arg]
+        edtStatus.text = "帧模式：" + SWT_FrameMode
+    )
+
     on btnSaveAnimation pressed do
     (
         local animName = SWTUtil.sanitizeAnimName edtAnimName.text
@@ -609,7 +680,12 @@ rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:405
             local animName = lbAnimList.items[lbAnimList.selection]
             local result = SWTUtil.loadSharedAnimation animName
             if result[1] == "ok" then
+            (
+                SWT_CurrentSpace = SWT_SharedAnimation.space
+                local idx = findItem ddlAnimSpace.items SWT_CurrentSpace
+                if idx > 0 do ddlAnimSpace.selection = idx
                 edtStatus.text = "已导入动画『" + animName + "』：BIP + " + result[2] as string + " 个选中骨骼动画。"
+            )
             else if result[1] == "missing" then
                 edtStatus.text = "找不到共享动画：" + result[2]
             else if result[1] == "missingBip" then
@@ -626,6 +702,9 @@ rollout SWT_Rollout "跨文件蒙皮权重复制" width:300 height:405
         else
         (
             local count = SWTUtil.applySnapshot SWT_SavedAnimation
+            SWT_CurrentSpace = SWT_SavedAnimation.space
+            local idx = findItem ddlAnimSpace.items SWT_CurrentSpace
+            if idx > 0 do ddlAnimSpace.selection = idx
             edtStatus.text = "已恢复保存动画：" + count as string + " 个选中骨骼。"
         )
     )
